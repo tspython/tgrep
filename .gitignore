@@ -1,0 +1,20 @@
+# Build artifacts
+/tgrep
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+
+# Coverage output
+*.out
+coverage.out
+
+# Dependency directories (optional)
+vendor/
+
+# Editor and OS files
+.DS_Store
+.idea/
+.vscode/
