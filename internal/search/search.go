@@ -131,7 +131,8 @@ func Preview(result domain.SearchResult, context int) string {
 		if lineNum == result.Line {
 			prefix = "> "
 		}
-		lines = append(lines, fmt.Sprintf("%s%4d | %s", prefix, lineNum, scanner.Text()))
+		highlighted := highlightForTerminal(result.File, scanner.Text())
+		lines = append(lines, fmt.Sprintf("%s%4d | %s", prefix, lineNum, highlighted))
 	}
 
 	if len(lines) == 0 {

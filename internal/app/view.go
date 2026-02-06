@@ -195,7 +195,6 @@ func (m Model) renderPreviewPanel(panelWidth, panelHeight int) string {
 		content = "Select a result to preview context"
 	}
 	previewBody := lipgloss.NewStyle().
-		Foreground(lipgloss.Color(vercelText)).
 		Background(lipgloss.Color(vercelSurfaceAlt)).
 		Padding(1, 1).
 		Width(panelWidth - 2).
