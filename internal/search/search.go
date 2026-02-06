@@ -2,107 +2,149 @@ package search
 
 import (
 	"bufio"
+	"bytes"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
-	"path"
-	"path/filepath"
+	"os/exec"
 	"regexp"
-	"slices"
 	"strings"
 
 	"github.com/tspython/tgrep/internal/domain"
 )
 
 func Files(query, fileQuery string) ([]domain.SearchResult, error) {
-	results := make([]domain.SearchResult, 0)
-	pattern, err := regexp.Compile(query)
-	useRegex := err == nil
-	filters, err := parseFileFilters(fileQuery)
-	if err != nil {
-		return nil, err
+	filters := parseFileFilters(fileQuery)
+
+	args := []string{
+		"--json",
+		"--line-number",
+		"--column",
+		"--color", "never",
+		"--no-heading",
+		"--with-filename",
+		"--smart-case",
 	}
 
-	walkErr := filepath.Walk(".", func(path string, info os.FileInfo, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if info.IsDir() && strings.HasPrefix(path, ".") && path != "." {
-			return filepath.SkipDir
-		}
-		if info.IsDir() || shouldSkipFile(path) {
-			return nil
-		}
-		if !matchesFileFilters(path, filters) {
-			return nil
-		}
+	if isValidRegex(query) {
+		args = append(args, query)
+	} else {
+		args = append(args, "-F", query)
+	}
 
-		fileMatches, fileErr := inFile(path, query, pattern, useRegex)
-		if fileErr != nil {
-			return nil
-		}
+	for _, filter := range filters {
+		args = append(args, "-g", filter)
+	}
 
-		results = append(results, fileMatches...)
-		return nil
-	})
+	args = append(args, ".")
 
-	return results, walkErr
+	stdout, stderr, err := runRipgrep(args)
+	if err != nil {
+		return nil, formatRipgrepError(err, stderr)
+	}
+
+	return parseRipgrepOutput(stdout)
 }
 
-func parseFileFilters(fileQuery string) ([]string, error) {
+func parseFileFilters(fileQuery string) []string {
 	raw := strings.TrimSpace(fileQuery)
 	if raw == "" || raw == "*" {
-		return nil, nil
+		return nil
 	}
 
 	tokens := strings.Split(raw, ",")
 	if len(tokens) == 1 {
 		tokens = strings.Fields(raw)
 	}
-	filters := make([]string, 0, len(tokens))
 
+	filters := make([]string, 0, len(tokens))
 	for _, token := range tokens {
-		filter := filepath.ToSlash(strings.TrimSpace(token))
-		if filter == "" {
+		filter := strings.TrimSpace(token)
+		if filter == "" || filter == "*" {
 			continue
-		}
-		if filter == "*" {
-			return nil, nil
-		}
-		if _, err := path.Match(filter, "x"); err != nil {
-			return nil, fmt.Errorf("invalid file filter %q: %w", filter, err)
 		}
 		filters = append(filters, filter)
 	}
 
-	return filters, nil
+	return filters
 }
 
-func matchesFileFilters(filePath string, filters []string) bool {
-	if len(filters) == 0 {
-		return true
-	}
+func isValidRegex(query string) bool {
+	_, err := regexp.Compile(query)
+	return err == nil
+}
 
-	relPath := filepath.ToSlash(strings.TrimPrefix(filePath, "./"))
-	base := filepath.Base(filePath)
+func runRipgrep(args []string) ([]byte, []byte, error) {
+	cmd := exec.Command("rg", args...)
 
-	for _, filter := range filters {
-		var (
-			match bool
-			err   error
-		)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
 
-		if strings.Contains(filter, "/") {
-			match, err = path.Match(filter, relPath)
-		} else {
-			match, err = path.Match(filter, base)
-		}
-
-		if err == nil && match {
-			return true
+	err := cmd.Run()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return nil, nil, nil
 		}
 	}
 
-	return false
+	return stdout.Bytes(), stderr.Bytes(), err
+}
+
+func formatRipgrepError(err error, stderr []byte) error {
+	if errors.Is(err, exec.ErrNotFound) {
+		return fmt.Errorf("ripgrep not found: install 'rg' and make sure it is in PATH")
+	}
+
+	message := strings.TrimSpace(string(stderr))
+	if message == "" {
+		message = err.Error()
+	}
+
+	return fmt.Errorf("ripgrep failed: %s", message)
+}
+
+func parseRipgrepOutput(output []byte) ([]domain.SearchResult, error) {
+	results := make([]domain.SearchResult, 0)
+
+	scanner := bufio.NewScanner(bytes.NewReader(output))
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		var event rgEvent
+		if err := json.Unmarshal(line, &event); err != nil {
+			continue
+		}
+
+		if event.Type != "match" {
+			continue
+		}
+
+		if event.Data.Path.Text == "" {
+			continue
+		}
+
+		content := strings.TrimRight(event.Data.Lines.Text, "\r\n")
+		for _, submatch := range event.Data.Submatches {
+			results = append(results, domain.SearchResult{
+				File:    event.Data.Path.Text,
+				Line:    event.Data.LineNumber,
+				Column:  submatch.Start + 1,
+				Content: content,
+			})
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+
+	return results, nil
 }
 
 func Preview(result domain.SearchResult, context int) string {
@@ -131,6 +173,7 @@ func Preview(result domain.SearchResult, context int) string {
 		if lineNum == result.Line {
 			prefix = "> "
 		}
+
 		highlighted := highlightForTerminal(result.File, scanner.Text())
 		lines = append(lines, fmt.Sprintf("%s%4d | %s", prefix, lineNum, highlighted))
 	}
@@ -141,70 +184,22 @@ func Preview(result domain.SearchResult, context int) string {
 	return strings.Join(lines, "\n")
 }
 
-func shouldSkipFile(path string) bool {
-	skipDirs := []string{".git", "node_modules", "vendor", ".vscode", "target", "dist"}
-	for _, dir := range skipDirs {
-		if strings.Contains(path, dir+string(os.PathSeparator)) {
-			return true
-		}
-	}
-
-	skipExts := []string{".exe", ".dll", ".so", ".dylib", ".bin", ".png", ".jpg", ".jpeg", ".gif", ".zip", ".tar", ".gz"}
-	ext := strings.ToLower(filepath.Ext(path))
-	return slices.Contains(skipExts, ext)
+type rgEvent struct {
+	Type string      `json:"type"`
+	Data rgEventData `json:"data"`
 }
 
-func inFile(filePath, query string, pattern *regexp.Regexp, useRegex bool) ([]domain.SearchResult, error) {
-	file, err := os.Open(filePath)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
+type rgEventData struct {
+	Path       rgText       `json:"path"`
+	Lines      rgText       `json:"lines"`
+	LineNumber int          `json:"line_number"`
+	Submatches []rgSubmatch `json:"submatches"`
+}
 
-	results := make([]domain.SearchResult, 0)
-	scanner := bufio.NewScanner(file)
-	lineNum := 0
-	queryLower := strings.ToLower(query)
+type rgSubmatch struct {
+	Start int `json:"start"`
+}
 
-	for scanner.Scan() {
-		lineNum++
-		line := scanner.Text()
-
-		if useRegex {
-			matches := pattern.FindAllStringIndex(line, -1)
-			for _, match := range matches {
-				results = append(results, domain.SearchResult{
-					File:    filePath,
-					Line:    lineNum,
-					Column:  match[0] + 1,
-					Content: line,
-				})
-			}
-			continue
-		}
-
-		lower := strings.ToLower(line)
-		idx := 0
-		for {
-			found := strings.Index(lower[idx:], queryLower)
-			if found < 0 {
-				break
-			}
-
-			column := idx + found + 1
-			results = append(results, domain.SearchResult{
-				File:    filePath,
-				Line:    lineNum,
-				Column:  column,
-				Content: line,
-			})
-
-			idx += found + 1
-			if idx >= len(lower) {
-				break
-			}
-		}
-	}
-
-	return results, scanner.Err()
+type rgText struct {
+	Text string `json:"text"`
 }
