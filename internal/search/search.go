@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -11,10 +12,14 @@ import (
 	"tgrep/internal/domain"
 )
 
-func Files(query string) ([]domain.SearchResult, error) {
+func Files(query, fileQuery string) ([]domain.SearchResult, error) {
 	results := make([]domain.SearchResult, 0)
 	pattern, err := regexp.Compile(query)
 	useRegex := err == nil
+	filters, err := parseFileFilters(fileQuery)
+	if err != nil {
+		return nil, err
+	}
 
 	walkErr := filepath.Walk(".", func(path string, info os.FileInfo, walkErr error) error {
 		if walkErr != nil {
@@ -24,6 +29,9 @@ func Files(query string) ([]domain.SearchResult, error) {
 			return filepath.SkipDir
 		}
 		if info.IsDir() || shouldSkipFile(path) {
+			return nil
+		}
+		if !matchesFileFilters(path, filters) {
 			return nil
 		}
 
@@ -37,6 +45,63 @@ func Files(query string) ([]domain.SearchResult, error) {
 	})
 
 	return results, walkErr
+}
+
+func parseFileFilters(fileQuery string) ([]string, error) {
+	raw := strings.TrimSpace(fileQuery)
+	if raw == "" || raw == "*" {
+		return nil, nil
+	}
+
+	tokens := strings.Split(raw, ",")
+	if len(tokens) == 1 {
+		tokens = strings.Fields(raw)
+	}
+	filters := make([]string, 0, len(tokens))
+
+	for _, token := range tokens {
+		filter := filepath.ToSlash(strings.TrimSpace(token))
+		if filter == "" {
+			continue
+		}
+		if filter == "*" {
+			return nil, nil
+		}
+		if _, err := path.Match(filter, "x"); err != nil {
+			return nil, fmt.Errorf("invalid file filter %q: %w", filter, err)
+		}
+		filters = append(filters, filter)
+	}
+
+	return filters, nil
+}
+
+func matchesFileFilters(filePath string, filters []string) bool {
+	if len(filters) == 0 {
+		return true
+	}
+
+	relPath := filepath.ToSlash(strings.TrimPrefix(filePath, "./"))
+	base := filepath.Base(filePath)
+
+	for _, filter := range filters {
+		var (
+			match bool
+			err   error
+		)
+
+		if strings.Contains(filter, "/") {
+			match, err = path.Match(filter, relPath)
+		} else {
+			match, err = path.Match(filter, base)
+		}
+
+		if err == nil && match {
+			return true
+		}
+	}
+
+	return false
 }
 
 func Preview(result domain.SearchResult, context int) string {

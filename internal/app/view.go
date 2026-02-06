@@ -25,18 +25,24 @@ func (m Model) View() string {
 	if m.width == 0 || m.height == 0 {
 		return "Starting tgrep..."
 	}
+	if m.width < 70 || m.height < 18 {
+		return "Terminal too small. Resize to at least 70x18."
+	}
 
 	page := lipgloss.NewStyle().
 		Background(lipgloss.Color(vercelBg)).
 		Foreground(lipgloss.Color(vercelText)).
-		Padding(0, 1)
+		Padding(1, 1, 0, 1)
+
+	innerWidth := max(30, m.width-page.GetHorizontalFrameSize())
+	panelHeight := max(6, m.resultsPanelHeight())
 
 	header := lipgloss.NewStyle().
 		Background(lipgloss.Color(vercelSurface)).
 		Foreground(lipgloss.Color(vercelText)).
 		Padding(0, 1).
 		Bold(true).
-		Width(max(10, m.width-4)).
+		Width(innerWidth).
 		Render("tgrep  -  fast local search")
 
 	queryTitle := lipgloss.NewStyle().Foreground(lipgloss.Color(vercelMuted)).Bold(true).Render("Query")
@@ -44,31 +50,57 @@ func (m Model) View() string {
 	if queryValue == "" {
 		queryValue = "Type a regex or plain text and press Enter"
 	}
-	queryBox := lipgloss.NewStyle().
+	queryBorder := vercelBorderStrong
+	if m.queryFocus == focusQuery {
+		queryBorder = vercelAccent
+	}
+	queryBoxStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(vercelBorderStrong)).
+		BorderForeground(lipgloss.Color(queryBorder)).
 		Background(lipgloss.Color(vercelSurfaceAlt)).
 		Foreground(lipgloss.Color(vercelText)).
-		Padding(0, 1).
-		Width(max(10, m.width-8)).
+		Padding(0, 1)
+	queryBox := queryBoxStyle.
+		Width(max(10, innerWidth-queryBoxStyle.GetHorizontalFrameSize())).
 		Render(queryValue + "_")
 
-	status := fmt.Sprintf("cwd: .   results: %d", len(m.results))
+	filesTitle := lipgloss.NewStyle().Foreground(lipgloss.Color(vercelMuted)).Bold(true).Render("Files (glob)")
+	filesValue := m.fileQuery
+	if filesValue == "" {
+		filesValue = "*"
+	}
+	filesBorder := vercelBorderStrong
+	if m.queryFocus == focusFiles {
+		filesBorder = vercelAccent
+	}
+	filesBoxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(filesBorder)).
+		Background(lipgloss.Color(vercelSurfaceAlt)).
+		Foreground(lipgloss.Color(vercelText)).
+		Padding(0, 1)
+	filesBox := filesBoxStyle.
+		Width(max(10, innerWidth-filesBoxStyle.GetHorizontalFrameSize())).
+		Render(filesValue + "_")
+
+	status := fmt.Sprintf("cwd: .   files: %s   results: %d", filesValue, len(m.results))
 	if m.searching {
-		status = "searching recursively in cwd..."
+		status = fmt.Sprintf("searching recursively in cwd (files: %s)...", filesValue)
 	}
 	statusBar := lipgloss.NewStyle().
 		Background(lipgloss.Color(vercelSurface)).
 		Foreground(lipgloss.Color(vercelMuted)).
 		Padding(0, 1).
-		Width(max(10, m.width-4)).
+		Width(innerWidth).
 		Render(status)
 
-	resultsPanel := m.renderResultsPanel()
-	previewPanel := m.renderPreviewPanel()
-	body := lipgloss.JoinHorizontal(lipgloss.Top, resultsPanel, previewPanel)
+	resultsPanelWidth := max(32, innerWidth*62/100)
+	previewPanelWidth := max(24, innerWidth-resultsPanelWidth-1)
+	resultsPanel := m.renderResultsPanel(resultsPanelWidth, panelHeight)
+	previewPanel := m.renderPreviewPanel(previewPanelWidth, panelHeight)
+	body := lipgloss.JoinHorizontal(lipgloss.Top, resultsPanel, " ", previewPanel)
 
-	footerText := "Enter search | Up/Down move | Esc quit"
+	footerText := "Tab switch input | Enter search | Up/Down move | Esc quit"
 	if m.err != nil {
 		footerText = "error: " + m.err.Error()
 	}
@@ -76,7 +108,7 @@ func (m Model) View() string {
 		Background(lipgloss.Color(vercelSurface)).
 		Foreground(lipgloss.Color(vercelMuted)).
 		Padding(0, 1).
-		Width(max(10, m.width-4)).
+		Width(innerWidth).
 		Render(footerText)
 
 	layout := lipgloss.JoinVertical(
@@ -85,7 +117,10 @@ func (m Model) View() string {
 		"",
 		queryTitle,
 		queryBox,
+		filesTitle,
+		filesBox,
 		statusBar,
+		"",
 		body,
 		footer,
 	)
@@ -93,35 +128,32 @@ func (m Model) View() string {
 	return page.Render(layout)
 }
 
-func (m Model) renderResultsPanel() string {
-	panelWidth := max(38, (m.width-6)*62/100)
-	height := m.resultsPanelHeight()
+func (m Model) renderResultsPanel(panelWidth, panelHeight int) string {
+	rowWidth := max(10, panelWidth-2)
+	rowCapacity := max(1, panelHeight-3)
 
 	head := lipgloss.NewStyle().
 		Background(lipgloss.Color(vercelSurface)).
 		Foreground(lipgloss.Color(vercelText)).
 		Bold(true).
 		Padding(0, 1).
-		Width(panelWidth - 2).
-		Render(m.formatHeader(panelWidth - 2))
+		Width(rowWidth).
+		Render(m.formatHeader(rowWidth))
 
-	rows := make([]string, 0, height)
+	rows := make([]string, 0, rowCapacity)
 	if len(m.results) == 0 {
 		rows = append(rows, lipgloss.NewStyle().Foreground(lipgloss.Color(vercelMuted)).Render("No matches yet"))
 	} else {
 		start := min(m.listOffset, len(m.results)-1)
-		end := min(start+height-1, len(m.results))
+		end := min(start+rowCapacity, len(m.results))
 		for i := start; i < end; i++ {
-			row := m.formatRow(m.results[i], panelWidth-2)
+			row := m.formatRow(m.results[i], rowWidth)
 			if i == m.selected {
 				row = lipgloss.NewStyle().
 					Background(lipgloss.Color(vercelAccentSoft)).
 					Foreground(lipgloss.Color(vercelText)).
-					BorderLeft(true).
-					BorderStyle(lipgloss.NormalBorder()).
-					BorderForeground(lipgloss.Color(vercelAccent)).
 					Padding(0, 1).
-					Width(panelWidth - 2).
+					Width(rowWidth).
 					Render(row)
 			} else {
 				bg := vercelSurfaceAlt
@@ -132,7 +164,7 @@ func (m Model) renderResultsPanel() string {
 					Background(lipgloss.Color(bg)).
 					Foreground(lipgloss.Color(vercelText)).
 					Padding(0, 1).
-					Width(panelWidth - 2).
+					Width(rowWidth).
 					Render(row)
 			}
 			rows = append(rows, row)
@@ -144,12 +176,12 @@ func (m Model) renderResultsPanel() string {
 		Border(lipgloss.NormalBorder()).
 		BorderForeground(lipgloss.Color(vercelBorder)).
 		Width(panelWidth).
-		Height(max(6, m.height-10)).
+		Height(panelHeight).
 		Render(body)
 }
 
-func (m Model) renderPreviewPanel() string {
-	panelWidth := max(24, (m.width-6)-(m.width-6)*62/100)
+func (m Model) renderPreviewPanel(panelWidth, panelHeight int) string {
+	bodyHeight := max(3, panelHeight-3)
 	title := lipgloss.NewStyle().
 		Background(lipgloss.Color(vercelSurface)).
 		Foreground(lipgloss.Color(vercelText)).
@@ -167,14 +199,14 @@ func (m Model) renderPreviewPanel() string {
 		Background(lipgloss.Color(vercelSurfaceAlt)).
 		Padding(1, 1).
 		Width(panelWidth - 2).
-		Height(max(5, m.height-13)).
+		Height(bodyHeight).
 		Render(content)
 
 	return lipgloss.NewStyle().
 		Border(lipgloss.NormalBorder()).
 		BorderForeground(lipgloss.Color(vercelBorder)).
 		Width(panelWidth).
-		Height(max(6, m.height-10)).
+		Height(panelHeight).
 		Render(lipgloss.JoinVertical(lipgloss.Left, title, previewBody))
 }
 
@@ -205,7 +237,7 @@ func (m Model) formatRow(r domain.SearchResult, width int) string {
 }
 
 func (m Model) resultsPanelHeight() int {
-	h := m.height - 13
+	h := m.height - 15
 	if h < 6 {
 		return 6
 	}

@@ -8,7 +8,9 @@ import (
 )
 
 type Model struct {
+	queryFocus    inputFocus
 	query         string
+	fileQuery     string
 	results       []domain.SearchResult
 	selected      int
 	listOffset    int
@@ -22,8 +24,20 @@ type searchFinishedMsg []domain.SearchResult
 
 type errMsg struct{ error }
 
+type inputFocus int
+
+const (
+	focusQuery inputFocus = iota
+	focusFiles
+)
+
 func NewModel() Model {
-	return Model{query: "", results: []domain.SearchResult{}}
+	return Model{
+		queryFocus: focusQuery,
+		query:      "",
+		fileQuery:  "*",
+		results:    []domain.SearchResult{},
+	}
 }
 
 func (m Model) Init() tea.Cmd {
@@ -36,11 +50,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "ctrl+c", "esc":
 			return m, tea.Quit
+		case "tab":
+			m.toggleFocus()
 		case "enter":
 			if m.query != "" && !m.searching {
 				m.searching = true
 				m.err = nil
-				return m, performSearch(m.query)
+				return m, performSearch(m.query, m.fileQuery)
 			}
 		case "up":
 			if m.selected > 0 {
@@ -55,14 +71,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.refreshPreview()
 			}
 		case "backspace":
-			if len(m.query) > 0 {
-				m.query = m.query[:len(m.query)-1]
-			}
+			m.backspaceFocusedInput()
 		case "space":
-			m.query += " "
+			m.appendToFocusedInput(" ")
+		case "ctrl+u":
+			m.clearFocusedInput()
 		default:
 			if msg.Type == tea.KeyRunes {
-				m.query += string(msg.Runes)
+				m.appendToFocusedInput(string(msg.Runes))
 			}
 		}
 	case tea.WindowSizeMsg:
@@ -84,7 +100,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) keepSelectionVisible() {
-	visibleRows := m.resultsPanelHeight() - 1
+	visibleRows := m.resultsPanelHeight() - 3
 	if visibleRows < 1 {
 		visibleRows = 1
 	}
@@ -108,9 +124,45 @@ func (m *Model) refreshPreview() {
 	m.preview = search.Preview(m.results[m.selected], 2)
 }
 
-func performSearch(query string) tea.Cmd {
+func (m *Model) toggleFocus() {
+	if m.queryFocus == focusQuery {
+		m.queryFocus = focusFiles
+		return
+	}
+	m.queryFocus = focusQuery
+}
+
+func (m *Model) appendToFocusedInput(text string) {
+	if m.queryFocus == focusFiles {
+		m.fileQuery += text
+		return
+	}
+	m.query += text
+}
+
+func (m *Model) backspaceFocusedInput() {
+	if m.queryFocus == focusFiles {
+		if len(m.fileQuery) > 0 {
+			m.fileQuery = m.fileQuery[:len(m.fileQuery)-1]
+		}
+		return
+	}
+	if len(m.query) > 0 {
+		m.query = m.query[:len(m.query)-1]
+	}
+}
+
+func (m *Model) clearFocusedInput() {
+	if m.queryFocus == focusFiles {
+		m.fileQuery = ""
+		return
+	}
+	m.query = ""
+}
+
+func performSearch(query, fileQuery string) tea.Cmd {
 	return func() tea.Msg {
-		results, err := search.Files(query)
+		results, err := search.Files(query, fileQuery)
 		if err != nil {
 			return errMsg{error: err}
 		}
