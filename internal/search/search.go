@@ -9,7 +9,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"tgrep/internal/domain"
+
+	"github.com/tspython/tgrep/internal/domain"
 )
 
 func Files(query, fileQuery string) ([]domain.SearchResult, error) {

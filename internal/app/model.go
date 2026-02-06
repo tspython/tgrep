@@ -1,8 +1,8 @@
 package app
 
 import (
-	"tgrep/internal/domain"
-	"tgrep/internal/search"
+	"github.com/tspython/tgrep/internal/domain"
+	"github.com/tspython/tgrep/internal/search"
 
 	tea "github.com/charmbracelet/bubbletea"
 )

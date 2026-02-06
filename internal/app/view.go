@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"tgrep/internal/domain"
+	"github.com/tspython/tgrep/internal/domain"
 
 	"github.com/charmbracelet/lipgloss"
 )

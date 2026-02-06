@@ -1,5 +1,6 @@
 # Build artifacts
 /tgrep
+dist/
 *.exe
 *.exe~
 *.dll

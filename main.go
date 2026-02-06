@@ -3,7 +3,7 @@ package main
 import (
 	"log"
 
-	"tgrep/internal/app"
+	"github.com/tspython/tgrep/internal/app"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
